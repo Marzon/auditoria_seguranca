@@ -185,7 +185,3 @@ for u in $(cut -f1 -d: /etc/passwd); do
 done
 
 echo -e "\n====== ✅ AUDITORIA DE SEGURANÇA - FIM ======"
-
-# Enviar para termbin
-TERMBIN_URL=$(cat "$LOGFILE" | nc termbin.com 9999)
-echo "Relatório disponível em: $TERMBIN_URL"
