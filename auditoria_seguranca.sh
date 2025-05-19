@@ -5,9 +5,15 @@ echo "====== 🚨 AUDITORIA DE SEGURANÇA - INÍCIO ======"
 LOGFILE="checagem_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOGFILE") 2>&1
 
-echo "\nEsse relatório estará salvo com nome $LOGFILE"
+echo -e "\nEsse relatório estará salvo com nome $LOGFILE"
 
-echo "\n=== Verificações básicas e segurança - Servidor Ubuntu ==="
+# Verifica se o script foi chamado com --update para aplicar correções
+APLICAR_ATUALIZACOES=false
+if [[ "$1" == "--update" ]]; then
+    APLICAR_ATUALIZACOES=true
+fi
+
+echo -e "\n=== Verificações básicas e segurança - Servidor Ubuntu ==="
 
 # 0. Ver versão do Linux
 echo -e "\n[0] Versão do Linux:"
@@ -15,7 +21,6 @@ if [ -f /etc/os-release ]; then
     . /etc/os-release
     echo "Distribuição: $NAME"
     echo "Versão: $VERSION"
-    # Exemplo básico para Ubuntu
     if [[ "$NAME" == "Ubuntu" ]]; then
         VNUM=$(echo "$VERSION_ID" | cut -d'.' -f1)
         if [ "$VNUM" -lt 20 ]; then
@@ -43,7 +48,6 @@ for prog in "${!softwares[@]}"; do
     VERS=$($CMD 2>&1 | head -1)
     echo "$prog: $VERS"
 
-    # Exemplos simples de alertas
     case $prog in
         nginx)
             if echo "$VERS" | grep -qE "1\.14\.0|1\.16\.1"; then
@@ -69,7 +73,7 @@ for prog in "${!softwares[@]}"; do
 done
 
 echo -e "\n🔐 [1] Usuários com shell válido:"
-awk -F: '/\/bin\/bash|\/bin\/sh/ {print $1}' /etc/passwd
+awk -F: '/\\/bin\\/bash|\\/bin\\/sh/ {print $1}' /etc/passwd
 
 echo -e "\n⚠️ [2] Usuários com UID 0 além do root:"
 awk -F: '($3 == 0) {print $1}' /etc/passwd
@@ -105,13 +109,13 @@ echo -e "\n📦 [12] Versões de PHP instaladas:"
 ls /etc/php/ 2>/dev/null || echo "Nenhuma versão detectada."
 
 echo -e "\n🔍 [13] Extensões perigosas habilitadas:"
-php -m 2>/dev/null | grep -E 'exec|shell_exec|system|passthru|proc_open'
+php -m 2>/dev/null | grep -E 'exec|shell_exec|system|passthru|proc_open' || echo "Nenhuma extensão perigosa detectada."
 
 echo -e "\n📁 [14] Procurando arquivos phpinfo():"
 grep -rl "phpinfo" /var/www 2>/dev/null || echo "Nenhum phpinfo encontrado."
 
 echo -e "\n📂 [15] Procurando .git em /var/www:"
-find /var/www -type d -name ".git"
+find /var/www -type d -name ".git" || echo "Nenhum diretório .git encontrado em /var/www."
 
 echo -e "\n🌐 [16] Servidores ativos:"
 systemctl is-active nginx && echo "✔️ NGINX ativo" || echo "❌ NGINX inativo"
@@ -128,7 +132,7 @@ ENCONTRADOS=0
 SITES_SEM_GIT=()
 for conf in /etc/nginx/sites-enabled/*; do
     [ -f "$conf" ] || continue
-    if grep -qE '\.git' "$conf"; then
+    if grep -qE '\\.git' "$conf"; then
         echo "[OK] $conf bloqueia .git"
     else
         echo "[FALHA] $conf NÃO bloqueia .git"
@@ -136,15 +140,15 @@ for conf in /etc/nginx/sites-enabled/*; do
         SITES_SEM_GIT+=("$conf")
     fi
 done
+
 if [ $ENCONTRADOS -eq 0 ]; then
     echo "✅ Todos os sites têm bloqueio .git"
 else
     echo "❌ $ENCONTRADOS site(s) sem bloqueio .git"
-    read -p "Quer adicionar bloqueio .git nesses arquivos? (s/n): " resp
-    if [[ "$resp" =~ ^[Ss]$ ]]; then
+    if [ "$APLICAR_ATUALIZACOES" = true ]; then
         for file in "${SITES_SEM_GIT[@]}"; do
             echo "Adicionando bloqueio .git em $file"
-            echo -e "\n# Bloqueio .git\nlocation ~ /\.git {\n    deny all;\n    access_log off;\n    log_not_found off;\n}" | sudo tee -a "$file"
+            echo -e "\\n# Bloqueio .git\\nlocation ~ /\\\\.git {\\n    deny all;\\n    access_log off;\\n    log_not_found off;\\n}" | sudo tee -a "$file"
         done
         echo "Recarregando nginx..."
         sudo nginx -t && sudo systemctl reload nginx
@@ -171,19 +175,12 @@ for u in $(cut -f1 -d: /etc/passwd); do
     crontab -u $u -l 2>/dev/null && echo "--- ($u)" || true
 done
 
-echo -e "\n🧼 [23] Deseja atualizar o sistema agora? (apt update) [s/n]"
-read -r RESPOSTA
-if [[ "$RESPOSTA" == "s" || "$RESPOSTA" == "S" ]]; then
-    apt update 
-else
-    echo "🔕 Atualização ignorada."
-fi
 
 echo -e "\n🔍 [24] Validando se server_tokens está OFF em nginx:"
 FILES_WITHOUT_SERVER_TOKENS=()
 FILES_WITH_SERVER_TOKENS=()
 
-for f in $(find /etc/nginx -type f -name "*.conf"); do
+for f in $(find /etc/nginx -type f); do
     if grep -q "server_tokens off;" "$f"; then
         FILES_WITH_SERVER_TOKENS+=("$f")
     else
@@ -202,19 +199,15 @@ if [ ${#FILES_WITHOUT_SERVER_TOKENS[@]} -gt 0 ]; then
     echo "⚠️ Arquivos sem server_tokens off:"
     for f in "${FILES_WITHOUT_SERVER_TOKENS[@]}"; do echo "  $f"; done
 
-    echo -n "Quer adicionar 'server_tokens off;' nestes arquivos? [s/n]: "
-    read -r RESP_ST
-    if [[ "$RESP_ST" =~ ^[sS]$ ]]; then
+    if [ "$APLICAR_ATUALIZACOES" = true ]; then
         for f in "${FILES_WITHOUT_SERVER_TOKENS[@]}"; do
-            echo -e "\nserver_tokens off;" >> "$f"
+            echo -e "\\nserver_tokens off;" | sudo tee -a "$f"
             echo "[+] Adicionado server_tokens off em $f"
         done
         echo "⏳ Validando config nginx..."
         nginx -t
         echo "🔄 Reiniciando nginx..."
         systemctl reload nginx
-    else
-        echo "❌ Não foi adicionado server_tokens off."
     fi
 else
     echo "👍 Todos os arquivos já possuem server_tokens off."
